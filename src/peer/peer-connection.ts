@@ -9,13 +9,9 @@ import {
   Peer_Request,
   Peer_Response,
   PeerClientState,
-  PeerId_Request,
   PeerId_Response,
   saltAndHashWorkspace,
-  SaltyHandshake_Request,
   SaltyHandshake_Response,
-  WorkspaceQuery_Request,
-  WorkspaceQuery_Response,
   WorkspaceState,
   WorkspaceStateFromServer,
   Ingest_Message,
@@ -43,6 +39,10 @@ export class SyncConnection implements ISyncConnection {
     // 4. Then using the information from workspace states,
     //    construct a new QueryFollower for each workspace
     //    and start pushing ingest messages, one by one...
+  }
+  
+  close() {
+    return this.otherPeer.closeConnection();
   }
 
   async setState(newState: Partial<PeerClientState>): Promise<void> {
@@ -82,18 +82,18 @@ export class SyncConnection implements ISyncConnection {
   //--------------------------------------------------
   // GET SERVER PEER ID
 
-  private async _request_serverPeerId() {
+  async _request_serverPeerId() {
     return this.otherPeer.sendMessage({ kind: "PEER_ID_REQUEST" });
   }
 
-  private async _respond_serverPeerId() {
+  async _respond_serverPeerId() {
     return this.otherPeer.sendMessage({
       kind: "PEER_ID_RESPONSE",
       peerId: this.peer.peerId,
     });
   }
 
-  private async _handle_serverPeerId(message: PeerId_Response) {
+  async _handle_serverPeerId(message: PeerId_Response) {
     return this.setState({
       serverPeerId: message.peerId,
       lastSeenAt: microsecondNow(),

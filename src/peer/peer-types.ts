@@ -46,7 +46,7 @@ export interface ISyncConnection {
     peer: IPeer,
     otherPeer: IRemotePeer,
     
-    close(): Promise<void>
+    close(): void
     
     // get and return the server's peerId.
     // this is small and simple and it be used as a ping to check if the server is online.
