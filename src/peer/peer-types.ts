@@ -2,6 +2,7 @@ import { Doc, WorkspaceAddress } from '../util/doc-types';
 import { IStorageAsync, StorageId } from '../storage/storage-types';
 import { Query } from '../query/query-types';
 import { Crypto } from '../crypto/crypto';
+import { Thunk } from '..';
 
 //================================================================================
 // PEER
@@ -23,6 +24,51 @@ export interface IPeer {
     addStorage(storage: IStorageAsync): Promise<void>;
     removeStorageByWorkspace(workspace: WorkspaceAddress): Promise<void> 
     removeStorage(storage: IStorageAsync): Promise<void>;
+}
+
+
+
+//================================================================================
+type ConnectionState = 'Connecting' | 'Open' | 'Closing' | 'Closed'
+
+export interface IRemotePeer {
+    // Teach this class to establish a connection with a remote peer
+    establishConnection(onMessage: (message: Peer_Request | Peer_Response | Ingest_Message) => Promise<void>): void
+    
+    // Teach this class how to send a message to the other peer
+    sendMessage(peerMessage: Peer_Request | Peer_Response | Ingest_Message): Promise<void>,
+    
+    readyState(): ConnectionState,
+    closeConnection(): void
+}
+
+export interface ISyncConnection {
+    peer: IPeer,
+    otherPeer: IRemotePeer,
+    
+    close(): Promise<void>
+    
+    // get and return the server's peerId.
+    // this is small and simple and it be used as a ping to check if the server is online.
+    _request_serverPeerId(): Promise<void>;
+    _respond_serverPeerId(message: PeerId_Request): Promise<void>;
+    _handle_serverPeerId(message: PeerId_Response): Promise<void>;
+
+    // figure out workspaces we have in common
+    // do_: launches the request, runs handle_, and updates our state with the result
+    _request_saltyHandshake(): Promise<void>;
+    _respond_saltyHandshake(message: SaltyHandshake_Request): Promise<void>;
+    _handle_saltyHandshake(message: SaltyHandshake_Response): Promise<void>;
+
+    // get workspace states from the server (localIndex numbers)
+    // do_: launches the request, runs handle_, and updates our state with the result
+    _request_allWorkspaceStates(): Promise<void>;
+    _respond_allWorkspaceStates(message: AllWorkspaceStates_Request): Promise<void>;
+    _handle_allWorkspaceStates(message: AllWorkspaceStates_Response): Promise<void>;
+    
+    // push a doc to the other peer for ingestion
+    _message_ingest(doc: Doc): Promise<void>
+    _handle_ingest(message: Ingest_Message): Promise<void>
 }
 
 //================================================================================
@@ -74,11 +120,24 @@ export let saltAndHashWorkspace = (salt: string, workspace: WorkspaceAddress): s
     Crypto.sha256base32(salt + workspace + salt);
 
 //--------------------------------------------------
+// PEER ID
+export type PeerId_Request = {
+    kind: 'PEER_ID_REQUEST'
+}
+
+export type PeerId_Response = {
+    kind: 'PEER_ID_RESPONSE',
+    peerId: string
+}
+
+//--------------------------------------------------
 // SALTY HANDSHAKE
 
 export interface SaltyHandshake_Request {
+    kind: 'SALTY_HANDSHAKE_REQUEST'
 }
 export interface SaltyHandshake_Response {
+    kind: 'SALTY_HANDSHAKE_RESPONSE'
     serverPeerId: PeerId,
     salt: string,
     saltedWorkspaces: string[],
@@ -88,29 +147,26 @@ export interface SaltyHandshake_Response {
 // ask server for all storage states
 
 export interface AllWorkspaceStates_Request {
+    kind: 'ALL_WORKSPACE_STATES_REQUEST'
     commonWorkspaces: WorkspaceAddress[],
 }
 export type AllWorkspaceStates_Response = {
+    kind: 'ALL_WORKSPACE_STATES_RESPONSE'
     serverPeerId: PeerId,
     workspaceStatesFromServer: Record<WorkspaceAddress, WorkspaceStateFromServer>;
 }
 export type AllWorkspaceStates_Outcome = Record<WorkspaceAddress, WorkspaceState>;
 
 //--------------------------------------------------
-// do a query for one workspace, one server
-// this only pulls client<--server, does not push client-->server
+// push docs to other peer
+export interface Ingest_Message {
+    kind: 'INGEST_MESSAGE',
+    doc: Doc,
+}
 
-export interface WorkspaceQuery_Request {
-    workspace: WorkspaceAddress,
-    storageId: StorageId,
-    query: Query,
-}
-export interface WorkspaceQuery_Response {
-    workspace: WorkspaceAddress,
-    storageId: StorageId,
-    serverMaxLocalIndexOverall: number,
-    docs: Doc[],
-}
+export type Peer_Request = PeerId_Request | PeerId_Response | SaltyHandshake_Request | AllWorkspaceStates_Request;
+
+export type Peer_Response = SaltyHandshake_Response | AllWorkspaceStates_Response;
 
 //--------------------------------------------------
 
@@ -145,48 +201,4 @@ export let initialPeerClientState: PeerClientState = {
     commonWorkspaces: null,
     workspaceStates: {},
     lastSeenAt: null,
-}
-
-export interface IPeerClient {
-    // Each client only talks to one server.
-
-    // this is async in case we later want to set up
-    // a message bus that alerts when the state is changed
-    setState(newState: Partial<PeerClientState>): Promise<void>;
-
-    // get and return the server's peerId.
-    // this is small and simple and it be used as a ping to check if the server is online.
-    do_getServerPeerId(): Promise<PeerId>;
-
-    // figure out workspaces we have in common
-    // do_: launches the request, runs handle_, and updates our state with the result
-    do_saltyHandshake(): Promise<void>;
-    handle_saltyHandshake(response: SaltyHandshake_Response): Promise<Partial<PeerClientState>>;
-
-    // get workspace states from the server (localIndex numbers)
-    // do_: launches the request, runs handle_, and updates our state with the result
-    do_allWorkspaceStates(): Promise<void>;
-    handle_allWorkspaceStates(request: AllWorkspaceStates_Request, response: AllWorkspaceStates_Response): Promise<Partial<PeerClientState>>;
-
-    // do a query and ingest the results
-    // do_: launches the request, runs process_, returns number of docs obtained that were not invalid
-    do_workspaceQuery(request: WorkspaceQuery_Request): Promise<number>;
-    process_workspaceQuery(response: WorkspaceQuery_Response): Promise<number>;
-}
-
-//--------------------------------------------------
-
-export interface IPeerServer {
-    // this does not affect any internal state, in fact
-    // the server has no internal state (except maybe for
-    // rate limiting, etc)
-
-    // this class will be exposed over RPC --
-    // make sure it only has methods that are safe to be exposed to the internet.
-
-    serve_peerId(): Promise<PeerId>;
-
-    serve_saltyHandshake(request: SaltyHandshake_Request): Promise<SaltyHandshake_Response>;
-    serve_allWorkspaceStates(request: AllWorkspaceStates_Request): Promise<AllWorkspaceStates_Response>;
-    serve_workspaceQuery(request: WorkspaceQuery_Request): Promise<WorkspaceQuery_Response>;
 }
